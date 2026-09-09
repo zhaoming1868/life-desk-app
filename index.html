@@ -538,13 +538,18 @@ var IDB_NAME='life_desk_idb', IDB_STORE='kv', IDB_VER=1, _idbPromise=null, _idbD
 function idbOpen(){
   if(_idbPromise) return _idbPromise;
   _idbPromise=new Promise(function(res,rej){
-    if(!window.indexedDB){ rej(new Error('no-idb')); return; }
+    if(!window.indexedDB){ STORE_OK=false; rej(new Error('no-idb')); return; }
+    var settled=false, timer=null;
+    function once(fn){ return function(e){ if(settled) return; settled=true; if(timer) clearTimeout(timer); fn(e); }; }
+    // 兜底：iOS Safari 等环境下 open 可能永久 pending（旧库锁死/无 Provisioning），若永不回调则页面会永远卡在"正在载入本地数据"，故超时即降级为不可写模式
+    timer=setTimeout(function(){ if(settled) return; settled=true; _idbPromise=null; STORE_OK=false; rej(new Error('idb-timeout')); }, 4500);
     try{
       var req=window.indexedDB.open(IDB_NAME,IDB_VER);
       req.onupgradeneeded=function(e){ var db=e.target.result; if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE); };
-      req.onsuccess=function(e){ _idbDb=e.target.result; res(_idbDb); };
-      req.onerror=function(e){ _idbPromise=null; rej(e.target.error||new Error('idb-open-failed')); };
-    }catch(err){ _idbPromise=null; rej(err); }
+      req.onsuccess=once(function(e){ _idbDb=e.target.result; res(_idbDb); });
+      req.onerror=once(function(e){ _idbPromise=null; STORE_OK=false; rej(e.target.error||new Error('idb-open-failed')); });
+      req.onblocked=once(function(){ _idbPromise=null; STORE_OK=false; rej(new Error('idb-blocked')); });
+    }catch(err){ settled=true; if(timer) clearTimeout(timer); _idbPromise=null; STORE_OK=false; rej(err); }
   });
   return _idbPromise;
 }
@@ -593,9 +598,9 @@ function migrate(o){
   return d;
 }
 
-var SEED={"app":"life-desk","v":1,"exportedAt":"","data":{"v":1,"settings":{},"tx":[],"habits":[],"body":[],"hr":[],"week":[],"events":[],"media":[],"record":[],"herbs":[],"bills":[]}};
+var SEED={"v":1,"settings":{"budget":6000,"height":158,"gender":"f","age":52,"goalWeight":55,"activity":1.725,"weight":56.2,"bp":"","demo":false,"addCount":0,"lastBackup":"","lastHost":""},"tx":[],"habits":[],"body":[],"hr":[],"week":[],"events":[],"media":[],"record":[],"herbs":[],"bills":[]};
 /* 内嵌种子数据：本地无数据时作为初始内容（来自用户最新备份），避免空白工作台。 */
-var RECOVER={"app":"life-desk","v":1,"exportedAt":"","data":{"v":1,"settings":{},"tx":[],"habits":[],"body":[],"hr":[],"week":[],"events":[],"media":[],"record":[],"herbs":[],"bills":[]}};
+var RECOVER={"v":1,"settings":{"budget":6000,"height":158,"gender":"f","age":52,"goalWeight":55,"activity":1.725,"weight":56.2,"bp":"","demo":false,"addCount":0,"lastBackup":"","lastHost":""},"tx":[],"habits":[],"body":[],"hr":[],"week":[],"events":[],"media":[],"record":[],"herbs":[],"bills":[]};
 
 /* 内嵌兜底：来自用户最新备份 生活工作台备份_2026-09-06(2).json（16 条，含 3 灵感） */
 function load(){
@@ -604,23 +609,23 @@ function load(){
       try{
         var o=JSON.parse(raw);
         if(!o||typeof o!=='object') throw new Error('结构异常');
-        DB=migrate(o); DB_BYTES=raw.length*2; return;
+        DB=migrate(o); DB_BYTES=raw.length*2; initRecHashes(); return;
       }catch(e){
         idbSet(BROKEN,raw).catch(function(){});
         return idbGet(BAK).then(function(bak){
           var ok=false;
           if(bak){ try{ DB=migrate(JSON.parse(bak)); ok=true; }catch(_){} }
           if(!ok) DB=defaults();
-          DB_BYTES = ok ? (bak?bak.length*2:0) : 0;
+          DB_BYTES = ok ? (bak?bak.length*2:0) : 0; initRecHashes();
           showBanner('broken','检测到数据文件损坏，已'+(ok?'自动回滚到上一次可用快照':'重置为空白工作台')+'。损坏原文已留存，可下载排查或用 JSON 备份恢复。',[
             {t:'下载损坏原文',a:'dl-broken'},{t:'导入备份恢复',a:'import'}
           ]);
         });
       }
     }
-    if(hashRestore()){ DB_BYTES=JSON.stringify(DB).length*2; return; }
+    if(hashRestore()){ DB_BYTES=JSON.stringify(DB).length*2; initRecHashes(); return; }
     DB=(typeof RECOVER!=='undefined'&&RECOVER)?migrate(RECOVER):((typeof SEED!=='undefined'&&SEED)?migrate(SEED):defaults());
-    DB.settings.demo=false;
+    DB.settings.demo=false; initRecHashes();
     if(!((typeof RECOVER!=='undefined'&&RECOVER)||(typeof SEED!=='undefined'&&SEED))){
       showBanner('empty','本机未检测到数据。若你有过备份，请点「导入备份」恢复；或用带数据的托管链接打开本页。',[{t:'导入备份',a:'import'}]);
     }
@@ -641,7 +646,7 @@ function paintSave(s){
 function save(silent){
   if(!STORE_OK) return Promise.resolve(false);
   var str;
-  try{ DB.settings.syncAt=Date.now(); str=JSON.stringify(DB); }catch(e){ toast('数据序列化失败：'+e.message,'err',4000); return Promise.resolve(false); }
+  try{ stampChanged(); DB.settings.syncAt=Date.now(); str=JSON.stringify(DB); }catch(e){ toast('数据序列化失败：'+e.message,'err',4000); return Promise.resolve(false); }
   DB_BYTES=str.length*2;
   _saving=true; paintSave('saving');
   var prev=_lastSaved;
@@ -818,20 +823,47 @@ function paintGhStatus(txt,type){
   el.textContent=txt||'';
   el.style.color= type==='err'?'var(--out)': type==='ok'?'var(--green)':'var(--ink3)';
 }
+var REC_KEYS=['tx','habits','body','hr','week','events','media','record','herbs','bills'];
+var _recHashes={};
+function recHash(x){ try{ return JSON.stringify(x); }catch(e){ return 'h'+Math.random(); } }
+function initRecHashes(){ _recHashes={}; REC_KEYS.forEach(function(k){ (DB[k]||[]).forEach(function(x){ if(x&&x.id) _recHashes[x.id]=recHash(x); }); }); }
+function stampChanged(){
+  var seen={};
+  REC_KEYS.forEach(function(k){
+    (DB[k]||[]).forEach(function(x){
+      if(!x||!x.id) return;
+      seen[x.id]=1;
+      var h=recHash(x);
+      if(_recHashes[x.id]===undefined){ x.syncAt=Date.now(); _recHashes[x.id]=h; }      // 新建记录：标记为本机最新
+      else if(_recHashes[x.id]!==h){ x.syncAt=Date.now(); _recHashes[x.id]=h; }         // 内容被修改：刷新时间戳
+    });
+  });
+  Object.keys(_recHashes).forEach(function(id){ if(!seen[id]) delete _recHashes[id]; });
+}
 function ghMerge(local,remote){
-  var la=local.settings.syncAt||0, ra=remote.settings.syncAt||0, win=la>=ra?local:remote;
-  var keys=['tx','habits','body','hr','week','events','media','record','herbs','bills'];
+  var keys=REC_KEYS;
   var out=defaults();
-  out.settings=Object.assign({},win.settings);
+  var la=local.settings.syncAt||0, ra=remote.settings.syncAt||0;
+  out.settings=Object.assign({}, (la>=ra?local:remote).settings);
   out.settings.gh=local.settings.gh||remote.settings.gh||{repo:'',branch:'main',path:'life-desk.json',token:'',auto:false};
-  out.settings.demo=false; out.settings.addCount=0;
+  out.settings.demo=false; out.settings.addCount=0; out.settings.syncAt=Math.max(la,ra);
   keys.forEach(function(k){
-    var map={}, ids={};
-    (local[k]||[]).forEach(function(x){ if(x&&x.id){ map[x.id]=x; ids[x.id]=1; } });
-    (remote[k]||[]).forEach(function(x){ if(x&&x.id){ ids[x.id]=1; if(!map[x.id]) map[x.id]=x; else map[x.id]=(win===local?local[k].filter(function(y){return y.id===x.id})[0]:x); } });
-    var arr=[]; Object.keys(ids).forEach(function(id){ arr.push(map[id]); });
+    var byId={};
+    (local[k]||[]).forEach(function(x){ if(x&&x.id) byId[x.id]={l:x}; });
+    (remote[k]||[]).forEach(function(x){ if(x&&x.id){ if(!byId[x.id]) byId[x.id]={}; byId[x.id].r=x; } });
+    var arr=[];
+    Object.keys(byId).forEach(function(id){
+      var e=byId[id], l=e.l, r=e.r;
+      if(l&&!r) arr.push(l);
+      else if(r&&!l) arr.push(r);
+      else {
+        var lv=l.syncAt||0, rv=r.syncAt||0;
+        arr.push(rv>lv ? r : (lv>rv ? l : (r||l))); // 同 id：以「该记录最后修改时间」新者为准；平局取云端
+      }
+    });
     out[k]=arr;
   });
+  dedupeWeek(out);
   return out;
 }
 var _ghPushing=false,_ghTimer=null;
@@ -844,31 +876,54 @@ function ghPush(){
   DB.settings.syncAt=Date.now();
   var content=b64enc(JSON.stringify(DB));
   function fail(msg){ _ghPushing=false; paintGhStatus('推送失败：'+msg,'err'); toast('推送失败：'+msg,'err',5200); return false; }
-  // Git Data API：blob -> head -> commit -> tree -> commit -> ref
-  return save(true).then(function(){
+  // 0) 先确认仓库存在（私有库/拼错会 404，给出明确提示而非静默失败）
+  return ghApi('GET','/repos/'+c.repo).then(function(r0){
+    if(r0.status===404) throw new Error('仓库 '+c.repo+' 不存在——请先在 GitHub 网页创建该仓库（建议私有）');
+    if(!r0.ok) throw new Error('访问仓库失败：'+((r0.data&&r0.data.message)||r0.status));
+    return save(true);
+  }).then(function(){
     return ghApi('POST','/repos/'+c.repo+'/git/blobs',{content:content,encoding:'base64'});
   }).then(function(r1){
     if(!r1.ok) throw new Error((r1.data&&r1.data.message)||('HTTP '+r1.status));
     var blobSha=r1.data.sha;
+    // 取分支引用；若仓库为空（没有任何提交/无该分支）则播种初始提交并创建分支
     return ghApi('GET','/repos/'+c.repo+'/git/refs/heads/'+c.branch).then(function(r2){
-      if(!r2.ok) throw new Error('取分支('+c.branch+')失败：'+((r2.data&&r2.data.message)||r2.status));
-      var headSha=r2.data.object.sha;
-      return ghApi('GET','/repos/'+c.repo+'/git/commits/'+headSha).then(function(r3){
-        if(!r3.ok) throw new Error('取提交失败：'+((r3.data&&r3.data.message)||r3.status));
-        var baseTree=r3.data.tree.sha;
-        return ghApi('POST','/repos/'+c.repo+'/git/trees',{base_tree:baseTree,tree:[{path:c.path,mode:'100644',type:'blob',sha:blobSha}]}).then(function(r4){
-          if(!r4.ok) throw new Error('建树失败：'+((r4.data&&r4.data.message)||r4.status));
-          var newTree=r4.data.sha;
+      if(r2.ok){
+        var headSha=r2.data.object.sha;
+        return ghApi('GET','/repos/'+c.repo+'/git/commits/'+headSha).then(function(r3){
+          if(!r3.ok) throw new Error('取提交失败：'+((r3.data&&r3.data.message)||r3.status));
+          var baseTree=r3.data.tree.sha;
+          return ghApi('POST','/repos/'+c.repo+'/git/trees',{base_tree:baseTree,tree:[{path:c.path,mode:'100644',type:'blob',sha:blobSha}]}).then(function(r4){
+            if(!r4.ok) throw new Error('建树失败：'+((r4.data&&r4.data.message)||r4.status));
+            return r4.data.sha;
+          });
+        }).then(function(newTree){
           return ghApi('POST','/repos/'+c.repo+'/git/commits',{message:'life-desk sync '+new Date().toISOString(),tree:newTree,parents:[headSha]}).then(function(r5){
             if(!r5.ok) throw new Error('建提交失败：'+((r5.data&&r5.data.message)||r5.status));
-            var newCommit=r5.data.sha;
-            return ghApi('PATCH','/repos/'+c.repo+'/git/refs/heads/'+c.branch,{sha:newCommit}).then(function(r6){
-              if(!r6.ok) throw new Error('更新引用失败：'+((r6.data&&r6.data.message)||r6.status));
+            return r5.data.sha;
+          });
+        }).then(function(newCommit){
+          return ghApi('PATCH','/repos/'+c.repo+'/git/refs/heads/'+c.branch,{sha:newCommit}).then(function(r6){
+            if(!r6.ok) throw new Error('更新引用失败：'+((r6.data&&r6.data.message)||r6.status));
+            return true;
+          });
+        });
+      } else if(r2.status===404){
+        // 空仓库：直接以当前内容播种初始提交并创建分支
+        return ghApi('POST','/repos/'+c.repo+'/git/trees',{tree:[{path:c.path,mode:'100644',type:'blob',sha:blobSha}]}).then(function(r4){
+          if(!r4.ok) throw new Error('建树失败：'+((r4.data&&r4.data.message)||r4.status));
+          var newTree=r4.data.sha;
+          return ghApi('POST','/repos/'+c.repo+'/git/commits',{message:'life-desk init sync '+new Date().toISOString(),tree:newTree,parents:[]}).then(function(r5){
+            if(!r5.ok) throw new Error('建初始提交失败：'+((r5.data&&r5.data.message)||r5.status));
+            return ghApi('POST','/repos/'+c.repo+'/git/refs',{ref:'refs/heads/'+c.branch,sha:r5.data.sha}).then(function(r6){
+              if(!r6.ok) throw new Error('创建分支失败：'+((r6.data&&r6.data.message)||r6.status));
               return true;
             });
           });
         });
-      });
+      } else {
+        throw new Error('取分支('+c.branch+')失败：'+((r2.data&&r2.data.message)||r2.status));
+      }
     });
   }).then(function(){
     DB.settings.lastBackup=new Date().toISOString(); return save();
@@ -932,6 +987,53 @@ function ghToggleAuto(){
   DB.settings.gh=DB.settings.gh||{repo:'',branch:'main',path:'life-desk.json',token:'',auto:false};
   DB.settings.gh.auto=auto;
   save().then(function(){ toast(auto?'已开启自动同步（保存即推送）':'已关闭自动同步','ok',3000); render(); });
+}
+function ghForcePush(){
+  var c=ghCfg();
+  if(!c.repo||!c.token){ toast('请先在「05 云端自动同步」填写 仓库(owner/repo) 与 Token','warn',4200); return Promise.resolve(false); }
+  toast('正在以本机覆盖云端…','',2200);
+  REC_KEYS.forEach(function(k){ (DB[k]||[]).forEach(function(x){ if(x&&x.id) x.syncAt=Date.now(); }); });
+  return ghPush();
+}
+/* week 去重：不同设备可能各自建过"同一天的周计划"，id 不同而 day 相同，
+   逐条 id 合并会让同一天存在两条，界面只显示其中一条（常是旧的）→ 看起来"同步了却不一致"。
+   故按 day 归一，保留最后修改的那条。 */
+function dedupeWeek(o){
+  if(!o||!Array.isArray(o.week)) return o;
+  var byDay={}, rest=[];
+  o.week.forEach(function(x){
+    if(!x||x.day==null){ if(x) rest.push(x); return; }
+    if(!byDay[x.day]||(x.syncAt||0)>(byDay[x.day].syncAt||0)) byDay[x.day]=x;
+  });
+  o.week=Object.keys(byDay).map(function(k){ return byDay[k]; }).concat(rest);
+  return o;
+}
+function ghForcePull(){
+  var c=ghCfg();
+  if(!c.repo||!c.token){ toast('请先在「05 云端自动同步」填写 仓库(owner/repo) 与 Token','warn',4200); return Promise.resolve(false); }
+  if(!window.confirm('将以「云端数据」完整覆盖本机，本机尚未推送的改动会丢失。\n\n确认继续？')) return Promise.resolve(false);
+  toast('正在以云端覆盖本机…','',2200);
+  function fail(msg){ paintGhStatus('拉取失败：'+msg,'err'); toast('拉取失败：'+msg,'err',5200); return false; }
+  return ghApi('GET','/repos/'+c.repo+'/contents/'+c.path).then(function(res){
+    if(res.status===404){ toast('云端还没有数据，先在一台设备推送一次','warn',4200); return false; }
+    if(!res.ok) throw new Error((res.data&&res.data.message)||('HTTP '+res.status));
+    var b64p = (res.data.size||0)>900000
+      ? ghApi('GET','/repos/'+c.repo+'/git/blobs/'+res.data.sha).then(function(rb){ if(!rb.ok) throw new Error('取文件内容失败：'+((rb.data&&rb.data.message)||rb.status)); return rb.data.content; })
+      : Promise.resolve(res.data.content);
+    return b64p.then(function(b64){
+      var remote; try{ remote=dedupeWeek(migrate(JSON.parse(b64dec(b64)))); }catch(e){ throw new Error('云端数据解析失败：'+e.message); }
+      return idbSet(BAK,JSON.stringify(DB)).catch(function(){}).then(function(){
+        var keepGh=(DB&&DB.settings)?DB.settings.gh:null;
+        DB=remote;
+        DB.settings.gh=keepGh||remote.settings.gh||{repo:'',branch:'main',path:'life-desk.json',token:'',auto:false};
+        DB.settings.demo=false; initRecHashes();
+        return save();
+      }).then(function(){
+        render(); paintGhStatus('已以云端覆盖本机 '+new Date().toLocaleString('zh-CN'),'ok');
+        toast('已用云端数据覆盖本机 ✓（'+countRemote(remote)+' 条）','ok',4200); return true;
+      });
+    });
+  }).catch(function(err){ return fail((err&&err.message)||err); });
 }
 
 function linkForceRestore(){
@@ -2236,11 +2338,13 @@ function vData(){
       '<button class="btn" data-act="gh-test">连接测试</button>'+
       '<button class="btn" data-act="gh-push">'+svg('i-up',15)+'☁ 推送到云端</button>'+
       '<button class="btn" data-act="gh-pull">'+svg('i-down',15)+'☁ 从云端取回</button>'+
+      '<button class="btn warn" data-act="gh-force">'+svg('i-up',15)+'⤴ 强制以本机覆盖云端</button>'+
+      '<button class="btn warn" data-act="gh-fpull">'+svg('i-down',15)+'⤵ 强制以云端覆盖本机</button>'+
       '<label class="btn" style="cursor:pointer"><input id="gh-auto" type="checkbox" '+(gh.auto?'checked':'')+' data-act="gh-auto" style="margin-right:6px;vertical-align:middle">自动同步（保存即推送）</label>'+
     '</div>'+
     '<div class="hr"></div>'+
     '<div style="font-size:12px;color:var(--ink3)">同步状态：<b id="gh-status" style="color:var(--ink3)">'+(gh.auto?'自动同步已开启':'未开启自动同步')+'</b></div>'+
-    '<div style="font-size:12px;color:var(--ink3);margin-top:6px">合并规则：按 id 并集、同一项以「最后保存的设备」为准；两设备各自新增互不丢失。仅当同一项在两设备都改且未同步时，以最后保存方为准。取回前本机自动留一份快照（BAK），绝不整体覆盖。</div>'+
+    '<div style="font-size:12px;color:var(--ink3);margin-top:6px">合并规则：按 id 并集、每条记录各自比「最后修改时间」、新者胜（不再整库通吃）；两设备各自新增互不丢失。若两边不一致且你确认本机是最新的，点「⤴ 强制以本机覆盖云端」即可把本机全部数据扳回云端。取回前本机自动留一份快照（BAK）。两边不一致时的两个"一键扳正"按钮：本机最新就点「⤴ 强制以本机覆盖云端」；云端最新就点「⤵ 强制以云端覆盖本机」。周计划按星期几归并，同一天的重复条目保留最后修改那条。</div>'+
     '</div>';
   return h;
 }
@@ -2293,6 +2397,8 @@ document.addEventListener('click',function(e){
     case 'gen-host': genHost(); break;
     case 'gh-push': ghPush(); break;
     case 'gh-pull': ghPull(); break;
+    case 'gh-force': ghForcePush(); break;
+    case 'gh-fpull': ghForcePull(); break;
     case 'gh-config-save': ghSaveCfg(); break;
     case 'gh-test': ghTest(); break;
     case 'gh-auto': ghToggleAuto(); break;
@@ -2549,7 +2655,10 @@ $('#filein').addEventListener('change',function(){
 /* ============ 启动 ============ */
 (function init(){
   var lv=document.getElementById('v-today'); if(lv) lv.innerHTML='<div class="card" style="text-align:center;color:var(--ink3);padding:48px 16px">正在载入本地数据…</div>';
-  load().then(function(){
+  // 兜底守卫：任何原因导致本地加载挂起（Promise 不返回）时，8 秒后强制进入界面，避免永久白屏
+  var _guard=new Promise(function(res){ setTimeout(function(){ res('__to__'); }, 8000); });
+  Promise.race([load(), _guard]).then(function(){
+    if(!DB){ try{ DB=(typeof RECOVER!=='undefined'&&RECOVER)?migrate(RECOVER):((typeof SEED!=='undefined'&&SEED)?migrate(SEED):defaults()); }catch(e){ DB=defaults(); } STORE_OK=false; }
     if(DB.settings.demo&&demoCount()){
       setTimeout(function(){ toast('已载入演示数据，可在「数据与备份」一键清空','warn',4200); },700);
     }
