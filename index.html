@@ -389,9 +389,10 @@ function toast(msg,type,ms){
 /* ============ 数据模型 ============ */
 var CATS_OUT=[
   {k:'餐饮',c:'#B06A4B'},{k:'生活',c:'#3E6152'},{k:'交通',c:'#48627A'},{k:'居家',c:'#7A5470'},
-  {k:'医疗',c:'#A05252'},{k:'学习',c:'#3F7280'},{k:'娱乐',c:'#A98736'},{k:'人情',c:'#8A6A55'},{k:'其他',c:'#968E80'}
+  {k:'医疗',c:'#A05252'},{k:'学习',c:'#3F7280'},{k:'娱乐',c:'#A98736'},{k:'人情',c:'#8A6A55'},
+  {k:'缴费',c:'#6B7F8C'},{k:'存款',c:'#4E7A5E'},{k:'理财',c:'#8A7A3F'},{k:'其他',c:'#968E80'}
 ];
-var CATS_IN=[{k:'工资',c:'#3E6152'},{k:'兼职',c:'#3F7280'},{k:'理财',c:'#A98736'},{k:'红包',c:'#B06A4B'},{k:'其他',c:'#968E80'}];
+var CATS_IN=[{k:'工资',c:'#3E6152'},{k:'赞助',c:'#B06A4B'}];
 var HABIT_COLORS=['#3E6152','#B06A4B','#48627A','#A98736','#7A5470','#3F7280','#A05252'];
 var MEDIA_TYPE={book:'书',movie:'影',music:'音'};
 var MEDIA_STAT={want:'想看',doing:'在读',done:'已完成'};
@@ -1543,7 +1544,8 @@ function txDlg(id){
     var amt=+v.amount;
     if(!(amt>0)){ toast('金额需要是大于 0 的数字','warn'); return; }
     var cats=(v.type==='in'?CATS_IN:CATS_OUT).map(function(c){return c.k});
-    if(cats.indexOf(v.cat)<0) v.cat=v.type==='in'?'其他':v.cat;
+    // 分类不在当前列表时：新建记录回退到该类型第一个；编辑旧记录则保留原分类（避免历史遗留分类被改名）
+    if(cats.indexOf(v.cat)<0 && !x) v.cat=(v.type==='in'?CATS_IN:CATS_OUT)[0].k;
     if(x){ Object.assign(x,{type:v.type,amount:amt,date:v.date,cat:v.cat,note:v.note}); delete x.demo; commit({only:'money'}); toast('已更新','ok'); }
     else{ DB.tx.push({id:uid(),type:v.type,amount:amt,date:v.date,cat:v.cat,note:v.note}); commit({count:1}); toast('已记录 ¥'+money(amt),'ok'); }
   });
