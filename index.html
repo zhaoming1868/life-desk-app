@@ -868,7 +868,7 @@ function ghMerge(local,remote){
   dedupeWeek(out);
   return out;
 }
-var _ghPushing=false,_ghTimer=null;
+var _ghPushing=false,_ghTimer=null,_ghForce=false;
 function ghPush(){
   var c=ghCfg();
   if(!c.repo||!c.token){ toast('请先在「05 云端自动同步」填写 仓库(owner/repo) 与 Token','warn',4200); return Promise.resolve(false); }
@@ -878,6 +878,7 @@ function ghPush(){
   DB.settings.syncAt=Date.now();
   var content=b64enc(JSON.stringify(DB));
   function fail(msg){ _ghPushing=false; paintGhStatus('推送失败：'+msg,'err'); toast('推送失败：'+msg,'err',5200); return false; }
+  function proceed(){
   // 0) 先确认仓库存在（私有库/拼错会 404，给出明确提示而非静默失败）
   return ghApi('GET','/repos/'+c.repo).then(function(r0){
     if(r0.status===404) throw new Error('仓库 '+c.repo+' 不存在或 Token 无权访问——请检查仓库名与 Token（需 repo 权限）');
@@ -932,6 +933,21 @@ function ghPush(){
     paintGhStatus('已同步 '+new Date().toLocaleString('zh-CN'),'ok');
     toast('已推送到 GitHub \u2713','ok',3200); _ghPushing=false; return true;
   }).catch(function(err){ return fail((err&&err.message)||err); });
+  }
+  /* 防呆：新设备首次配置时本机是空的，此时若自动同步把"空数据"推上去，会直接清空云端真实数据。
+     故「本机 0 条 + 云端文件非空」一律拦截；「⤴ 强制以本机覆盖云端」是用户明确要求，放行。 */
+  if(!_ghForce && countRemote(DB)===0){
+    return ghApi('GET','/repos/'+c.repo+'/contents/'+c.path).then(function(rr){
+      if(rr.ok && (rr.data.size||0)>500){
+        _ghPushing=false;
+        paintGhStatus('已阻止：本机为空，未覆盖云端','err');
+        toast('已阻止推送：本机暂无数据，请先点「☁ 从云端取回」','warn',5600);
+        return false;
+      }
+      return proceed();
+    },function(){ return proceed(); });
+  }
+  return proceed();
 }
 function ghPull(){
   var c=ghCfg();
@@ -994,7 +1010,8 @@ function ghForcePush(){
   if(!c.repo||!c.token){ toast('请先在「05 云端自动同步」填写 仓库(owner/repo) 与 Token','warn',4200); return Promise.resolve(false); }
   toast('正在以本机覆盖云端…','',2200);
   REC_KEYS.forEach(function(k){ (DB[k]||[]).forEach(function(x){ if(x&&x.id) x.syncAt=Date.now(); }); });
-  return ghPush();
+  _ghForce=true;
+  return ghPush().then(function(r){ _ghForce=false; return r; },function(e){ _ghForce=false; throw e; });
 }
 /* week 去重：不同设备可能各自建过"同一天的周计划"，id 不同而 day 相同，
    逐条 id 合并会让同一天存在两条，界面只显示其中一条（常是旧的）→ 看起来"同步了却不一致"。
