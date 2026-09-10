@@ -541,14 +541,14 @@ function idbOpen(){
     if(!window.indexedDB){ STORE_OK=false; rej(new Error('no-idb')); return; }
     var settled=false, timer=null;
     function once(fn){ return function(e){ if(settled) return; settled=true; if(timer) clearTimeout(timer); fn(e); }; }
-    // 兜底：iOS Safari 等环境下 open 可能永久 pending（旧库锁死/无 Provisioning），若永不回调则页面会永远卡在"正在载入本地数据"，故超时即降级为不可写模式
-    timer=setTimeout(function(){ if(settled) return; settled=true; _idbPromise=null; STORE_OK=false; rej(new Error('idb-timeout')); }, 4500);
+    // 兜底：iOS Safari 等环境下 open 可能永久 pending；超时只拒绝本次打开（允许重试），绝不置 STORE_OK=false（否则 save/自动同步会整体失效）
+    timer=setTimeout(function(){ if(settled) return; settled=true; _idbPromise=null; rej(new Error('idb-timeout')); }, 15000);
     try{
       var req=window.indexedDB.open(IDB_NAME,IDB_VER);
       req.onupgradeneeded=function(e){ var db=e.target.result; if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE); };
       req.onsuccess=once(function(e){ _idbDb=e.target.result; res(_idbDb); });
       req.onerror=once(function(e){ _idbPromise=null; STORE_OK=false; rej(e.target.error||new Error('idb-open-failed')); });
-      req.onblocked=once(function(){ _idbPromise=null; STORE_OK=false; rej(new Error('idb-blocked')); });
+      req.onblocked=once(function(){ _idbPromise=null; rej(new Error('idb-blocked')); });
     }catch(err){ settled=true; if(timer) clearTimeout(timer); _idbPromise=null; STORE_OK=false; rej(err); }
   });
   return _idbPromise;
@@ -660,9 +660,11 @@ function save(silent){
     return true;
   }).catch(function(err){
     _saving=false; paintSave('err');
-    STORE_OK=false;
-    showBanner('quota','保存失败：本地存储不可用（'+(err&&err.message||'')+'）。请立即导出 JSON 备份，避免数据丢失。',[{t:'立即导出备份',a:'export'}]);
-    toast('保存失败，数据未写入本地','err',4200);
+    // 注意：不置 STORE_OK=false —— 偶发写入失败（事务打断/瞬时配额）不应永久禁用存储，否则后续修改全部丢失。下次 save 会自动重试。
+    if(!window.__saveWarned){ window.__saveWarned=true;
+      showBanner('quota','保存失败：本地存储暂不可用（'+(err&&err.message||'')+'）。请立即导出 JSON 备份，后续修改会自动重试保存。',[{t:'立即导出备份',a:'export'}]);
+      toast('保存失败，数据未写入本地','err',4200);
+    }
     return false;
   });
 }
@@ -878,10 +880,9 @@ function ghPush(){
   function fail(msg){ _ghPushing=false; paintGhStatus('推送失败：'+msg,'err'); toast('推送失败：'+msg,'err',5200); return false; }
   // 0) 先确认仓库存在（私有库/拼错会 404，给出明确提示而非静默失败）
   return ghApi('GET','/repos/'+c.repo).then(function(r0){
-    if(r0.status===404) throw new Error('仓库 '+c.repo+' 不存在——请先在 GitHub 网页创建该仓库（建议私有）');
-    if(!r0.ok) throw new Error('访问仓库失败：'+((r0.data&&r0.data.message)||r0.status));
+    if(r0.status===404) throw new Error('仓库 '+c.repo+' 不存在或 Token 无权访问——请检查仓库名与 Token（需 repo 权限）');
     return save(true);
-  }).then(function(){
+  },function(){ return save(true); }).then(function(){
     return ghApi('POST','/repos/'+c.repo+'/git/blobs',{content:content,encoding:'base64'});
   }).then(function(r1){
     if(!r1.ok) throw new Error((r1.data&&r1.data.message)||('HTTP '+r1.status));
@@ -2655,10 +2656,14 @@ $('#filein').addEventListener('change',function(){
 /* ============ 启动 ============ */
 (function init(){
   var lv=document.getElementById('v-today'); if(lv) lv.innerHTML='<div class="card" style="text-align:center;color:var(--ink3);padding:48px 16px">正在载入本地数据…</div>';
-  // 兜底守卫：任何原因导致本地加载挂起（Promise 不返回）时，8 秒后强制进入界面，避免永久白屏
-  var _guard=new Promise(function(res){ setTimeout(function(){ res('__to__'); }, 8000); });
-  Promise.race([load(), _guard]).then(function(){
-    if(!DB){ try{ DB=(typeof RECOVER!=='undefined'&&RECOVER)?migrate(RECOVER):((typeof SEED!=='undefined'&&SEED)?migrate(SEED):defaults()); }catch(e){ DB=defaults(); } STORE_OK=false; }
+  var finished=false;
+  function ensureDB(){
+    if(DB) return;
+    try{ DB=(typeof RECOVER!=='undefined'&&RECOVER)?migrate(RECOVER):((typeof SEED!=='undefined'&&SEED)?migrate(SEED):defaults()); }catch(e){ DB=defaults(); }
+  }
+  function boot(){
+    if(finished) return; finished=true;
+    ensureDB();
     if(DB.settings.demo&&demoCount()){
       setTimeout(function(){ toast('已载入演示数据，可在「数据与备份」一键清空','warn',4200); },700);
     }
@@ -2670,9 +2675,14 @@ $('#filein').addEventListener('change',function(){
     } else {
       setView('today');
     }
-  }).catch(function(){
-    setView('today');
-  });
+  }
+  // 兜底：载入过久时先把界面渲染出来，避免永久白屏。
+  // 关键：此处**绝不能**置 STORE_OK=false —— 那会让 save() 直接返回，本地不落盘、自动同步也停摆。
+  var guardTimer=setTimeout(function(){
+    if(finished) return;
+    try{ ensureDB(); render(); setView('today'); }catch(e){}
+  }, 12000);
+  load().then(function(){ clearTimeout(guardTimer); boot(); },function(){ clearTimeout(guardTimer); boot(); });
   window.addEventListener('beforeunload',function(e){
     if(!STORE_OK) return;
     save(true);
