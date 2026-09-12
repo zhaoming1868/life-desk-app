@@ -93,6 +93,7 @@ a{color:inherit;text-decoration:none}
 .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
 .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
 .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g5{grid-template-columns:repeat(5,minmax(0,1fr))}
 .split{display:grid;grid-template-columns:1.35fr .95fr;gap:18px;align-items:start}
 .split-r{display:grid;grid-template-columns:.95fr 1.35fr;gap:18px;align-items:start}
 .kpi{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:15px 16px}
@@ -229,7 +230,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
 .tabbar button.on svg{stroke-width:2.2}
 
 @media(max-width:1040px){
-  .g4{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g4,.g5{grid-template-columns:repeat(2,minmax(0,1fr))}
   .split,.split-r{grid-template-columns:1fr}
 }
 @media(max-width:900px){
@@ -241,7 +242,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
   .brand .d1{font-size:20px}
   .banner{padding:0 16px}
   .g2,.g3{grid-template-columns:1fr}
-  .g4{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g4,.g5{grid-template-columns:repeat(2,minmax(0,1fr))}
   .mets{grid-template-columns:repeat(2,1fr)}
   .hm{grid-template-columns:repeat(10,1fr);gap:5px}
   .frow{grid-template-columns:1fr}
@@ -253,7 +254,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
   #toast{bottom:78px}
 }
 @media(max-width:420px){
-  .g4{grid-template-columns:1fr}
+  .g4,.g5{grid-template-columns:1fr}
   .top-mid .pulse{padding:5px 10px 5px 6px}
 }
 @media print{.top,.rail,.tabbar,.banner{display:none}}
@@ -393,6 +394,10 @@ var CATS_OUT=[
   {k:'缴费',c:'#6B7F8C'},{k:'存款',c:'#4E7A5E'},{k:'理财',c:'#8A7A3F'},{k:'其他',c:'#968E80'}
 ];
 var CATS_IN=[{k:'工资',c:'#3E6152'},{k:'赞助',c:'#B06A4B'}];
+// 理财桶：存款与理财两类在明细与概览中单独归入「理财」，不与消费性支出混算
+var FIN_CATS=['存款','理财'];
+function isFin(x){ return x.type==='out'&&FIN_CATS.indexOf(x.cat)>=0; }
+function txFinSum(list){ return sum((list||[]).filter(isFin).map(function(x){return +x.amount||0})); }
 var HABIT_COLORS=['#3E6152','#B06A4B','#48627A','#A98736','#7A5470','#3F7280','#A05252'];
 var MEDIA_TYPE={book:'书',movie:'影',music:'音'};
 var MEDIA_STAT={want:'想看',doing:'在读',done:'已完成'};
@@ -1391,7 +1396,7 @@ function vToday(){
   h+='</div>';
 
   /* 速览 */
-  var mt=monthTx(ym(t)),mout=txSum(mt,'out'),left=(+DB.settings.budget||0)-mout;
+  var mt=monthTx(ym(t)),mout=txSum(mt,'out')-txFinSum(mt),left=(+DB.settings.budget||0)-mout;
   var wk=DB.week.filter(function(w){return +w.day===parseD(t).getDay()});
   var restHr=DB.hr.slice().sort(function(a,b){return a.date<b.date?1:-1})[0];
   h+='<div class="sh"><span class="n">02</span><h2>今日速览</h2><span class="x">'+
@@ -1426,9 +1431,9 @@ function vMoney(){
   DB.tx.forEach(function(x){seen[ym(x.date)]=1});
   seen[ym(t)]=1;
   Object.keys(seen).sort().reverse().forEach(function(m){months.push(m)});
-  var mt=monthTx(curM),out=txSum(mt,'out'),inc=txSum(mt,'in'),bud=+DB.settings.budget||0;
+  var mt=monthTx(curM),outAll=txSum(mt,'out'),fin=txFinSum(mt),out=outAll-fin,inc=txSum(mt,'in'),bud=+DB.settings.budget||0;
   var prevM=(function(){var d=parseD(curM+'-01');d.setMonth(d.getMonth()-1);return ym(ymd(d))})();
-  var pOut=txSum(monthTx(prevM),'out'),diff=out-pOut;
+  var pMt=monthTx(prevM),pOut=txSum(pMt,'out')-txFinSum(pMt),diff=out-pOut;
   var dObj=parseD(curM+'-01'),dim=new Date(dObj.getFullYear(),dObj.getMonth()+1,0).getDate();
   var passed=curM===ym(t)?parseD(t).getDate():dim;
   var perDay=(bud-out)/Math.max(1,dim-passed+1);
@@ -1440,11 +1445,12 @@ function vMoney(){
     '<button class="btn sm" data-act="budget-set">'+svg('i-cog',13,1.6)+'预算</button>'+
     '<button class="btn sm acc" data-act="tx-add">'+svg('i-plus',13,2)+'记一笔</button></span></div>';
 
-  h+='<div class="grid g4">'+
-    '<div class="kpi"><div class="k">支出</div><div class="v c-out">¥'+money(out)+'</div><div class="d">'+(pOut?(diff>=0?'较上月多 ¥'+money(diff):'较上月省 ¥'+money(-diff)):'上月无数据')+'</div></div>'+
+  h+='<div class="grid g5">'+
     '<div class="kpi"><div class="k">收入</div><div class="v c-in">¥'+money(inc)+'</div><div class="d">'+mt.filter(function(x){return x.type==='in'}).length+' 笔进账</div></div>'+
-    '<div class="kpi"><div class="k">结余</div><div class="v '+(inc-out>=0?'c-in':'c-out')+'">¥'+money(inc-out)+'</div><div class="d">储蓄率 '+(inc>0?Math.round((inc-out)/inc*100):0)+'%</div></div>'+
-    '<div class="kpi"><div class="k">预算余额</div><div class="v '+(bud-out>=0?'':'c-out')+'">¥'+money(bud-out)+'</div><div class="d">'+(curM===ym(t)?'剩 '+(dim-passed+1)+' 天 · 日均可用 ¥'+money(Math.max(0,perDay)):'已结束')+'</div></div>'+
+    '<div class="kpi"><div class="k">理财</div><div class="v">¥'+money(fin)+'</div><div class="d">'+mt.filter(isFin).length+' 笔 · 存款/理财</div></div>'+
+    '<div class="kpi"><div class="k">支出</div><div class="v c-out">¥'+money(out)+'</div><div class="d">'+(pOut?(diff>=0?'较上月多 ¥'+money(diff):'较上月省 ¥'+money(-diff)):'上月无数据')+'</div></div>'+
+    '<div class="kpi"><div class="k">结余</div><div class="v '+(inc-out-fin>=0?'c-in':'c-out')+'">¥'+money(inc-out-fin)+'</div><div class="d">储蓄率 '+(inc>0?Math.round((inc-out-fin)/inc*100):0)+'%</div></div>'+
+    '<div class="kpi"><div class="k">预算金额</div><div class="v '+(bud?(bud-out>=0?'':'c-out'):'')+'">'+(bud?'¥'+money(bud):'未设置')+'</div><div class="d">'+(bud?('已用支出 ¥'+money(out)+' · 剩余 ¥'+money(bud-out)):'点「预算」设置月度上限')+'</div></div>'+
   '</div>';
 
   var used=bud>0?clamp(out/bud*100,0,100):0;
@@ -1459,10 +1465,11 @@ function vMoney(){
   for(var i=5;i>=0;i--){
     var d2=parseD(curM+'-01');d2.setMonth(d2.getMonth()-i);
     var mm=ym(ymd(d2)),lt=monthTx(mm);
-    last6.push({k:(d2.getMonth()+1)+'月',v:Math.round(txSum(lt,'out')),lb:txSum(lt,'out')?'¥'+Math.round(txSum(lt,'out')):'',dim:mm!==curM,c:mm===curM?'#B06A4B':'#C9BFA9'});
+    var vCons=txSum(lt,'out')-txFinSum(lt);
+    last6.push({k:(d2.getMonth()+1)+'月',v:Math.round(vCons),lb:vCons?'¥'+Math.round(vCons):'',dim:mm!==curM,c:mm===curM?'#B06A4B':'#C9BFA9'});
   }
   var byCat={};
-  mt.filter(function(x){return x.type==='out'}).forEach(function(x){byCat[x.cat]=(byCat[x.cat]||0)+(+x.amount||0)});
+  mt.filter(function(x){return x.type==='out'&&FIN_CATS.indexOf(x.cat)<0}).forEach(function(x){byCat[x.cat]=(byCat[x.cat]||0)+(+x.amount||0)});
   var catList=Object.keys(byCat).map(function(k){
     var f=CATS_OUT.filter(function(c){return c.k===k})[0];
     return {k:k,v:byCat[k],c:f?f.c:'#968E80'};
@@ -1472,7 +1479,7 @@ function vMoney(){
   h+='<div class="split"><div class="card"><div style="font-size:12.5px;color:var(--ink3);margin-bottom:6px">近 6 个月支出</div>'+
     barsSVG(last6,520,190)+'</div>';
   h+='<div class="card"><div style="font-size:12.5px;color:var(--ink3);margin-bottom:10px">本月分类占比</div>';
-  if(!catList.length) h+=emptyHTML('i-money','本月还没有支出记录');
+  if(!catList.length) h+=emptyHTML('i-money','本月还没有消费性支出记录');
   else h+='<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><div style="flex:0 0 148px;margin:0 auto">'+donutSVG(catList,148)+'</div>'+
     '<div class="legend" style="flex:1;min-width:160px">'+catList.slice(0,6).map(function(c){
       return '<div class="lg"><span class="sw" style="background:'+c.c+'"></span>'+esc(c.k)+
@@ -1484,7 +1491,9 @@ function vMoney(){
   var list=DB.tx.slice().sort(function(a,b){return a.date===b.date?(a.id<b.id?1:-1):(a.date<b.date?1:-1)});
   list=list.filter(function(x){
     if(mFilter.scope!=='all'&&ym(x.date)!==curM) return false;
-    if(mFilter.type!=='all'&&x.type!==mFilter.type) return false;
+    if(mFilter.type==='fin'){ if(!isFin(x)) return false; }
+    else if(mFilter.type==='out'){ if(x.type!=='out'||isFin(x)) return false; }
+    else if(mFilter.type!=='all'&&x.type!==mFilter.type) return false;
     if(mFilter.cat&&x.cat!==mFilter.cat) return false;
     if(mFilter.q&&(String(x.note||'')+x.cat).toLowerCase().indexOf(mFilter.q.toLowerCase())<0) return false;
     return true;
@@ -1497,6 +1506,7 @@ function vMoney(){
   h+='<div class="card"><div class="quickbar" style="margin-bottom:12px">'+
     '<div class="seg"><button data-act="m-type" data-v="all" class="'+(mFilter.type==='all'?'on':'')+'">全部</button>'+
     '<button data-act="m-type" data-v="out" class="'+(mFilter.type==='out'?'on':'')+'">支出</button>'+
+    '<button data-act="m-type" data-v="fin" class="'+(mFilter.type==='fin'?'on':'')+'">理财</button>'+
     '<button data-act="m-type" data-v="in" class="'+(mFilter.type==='in'?'on':'')+'">收入</button></div>'+
     '<button class="btn sm" data-act="m-scope">'+(mFilter.scope==='all'?'范围：全部月份':'范围：'+curM)+'</button>'+
     '<input class="inp" data-act="m-q" value="'+esc(mFilter.q)+'" placeholder="搜索备注/分类" style="min-height:34px;width:170px;font-size:14px;border-radius:999px;padding:5px 13px">'+
@@ -1562,18 +1572,21 @@ function txDlg(id){
 function txRows(){
   var rows=[['日期','类型','分类','金额','备注']];
   DB.tx.slice().sort(function(a,b){return a.date<b.date?1:-1}).forEach(function(x){
-    rows.push([x.date,x.type==='out'?'支出':'收入',x.cat,(x.type==='out'?-1:1)*(+x.amount||0),x.note||'']);
+    var tp=x.type==='in'?'收入':(isFin(x)?'理财':'支出');
+    rows.push([x.date,tp,x.cat,(x.type==='out'?-1:1)*(+x.amount||0),x.note||'']);
   });
   return rows;
 }
 function monthRows(){
   var by={};
   DB.tx.forEach(function(x){
-    var m=ym(x.date);by[m]=by[m]||{o:0,i:0};
-    by[m][x.type==='out'?'o':'i']+=(+x.amount||0);
+    var m=ym(x.date);by[m]=by[m]||{o:0,f:0,i:0};
+    if(x.type==='in') by[m].i+=(+x.amount||0);
+    else if(isFin(x)) by[m].f+=(+x.amount||0);
+    else by[m].o+=(+x.amount||0);
   });
-  var rows=[['月份','支出','收入','结余']];
-  Object.keys(by).sort().forEach(function(m){rows.push([m,by[m].o,by[m].i,by[m].i-by[m].o])});
+  var rows=[['月份','支出','理财','收入','结余']];
+  Object.keys(by).sort().forEach(function(m){rows.push([m,by[m].o,by[m].f,by[m].i,by[m].i-by[m].o-by[m].f])});
   return rows;
 }
 /* ============ 视图：习惯健康 ============ */
@@ -1845,8 +1858,8 @@ function eventDlg(id){
 var recF={q:'',m:'',d:'',year:'',idea:false};
 
 /* ============ 视图：生活缴费 ============ */
-var BILL_TYPE={gas:'天然气',water:'水费',electric:'电费',heating:'暖气费'};
-var BILL_COLORS={gas:'#3F7280',water:'#48627A',electric:'#A98736',heating:'#B06A4B'};
+var BILL_TYPE={gas:'天然气',water:'水费',electric:'电费',heating:'暖气费',phone:'手机缴费'};
+var BILL_COLORS={gas:'#3F7280',water:'#48627A',electric:'#A98736',heating:'#B06A4B',phone:'#7A5470'};
 var billF={type:'all',m:''};
 function vBills(){
   var all=DB.bills.slice().sort(function(a,b){return (a.date||'')<(b.date||'')?1:-1});
@@ -1861,14 +1874,14 @@ function vBills(){
     '</select>';
   var totAll=sum(DB.bills.map(function(b){return +b.amount||0}));
   var totCur=sum(all.map(function(b){return +b.amount||0}));
-  var byType=['gas','water','electric','heating'].map(function(tp){
+  var byType=['gas','water','electric','heating','phone'].map(function(tp){
     var v=sum(DB.bills.filter(function(b){return b.type===tp}).map(function(b){return +b.amount||0}));
     return {tp:tp,v:v};
   });
-  var h='<div class="hero"><h1>生活缴费</h1><p>天然气、水、电、暖气——金额与时间都记清楚，凭证图随手留档。</p></div>';
+  var h='<div class="hero"><h1>生活缴费</h1><p>天然气、水、电、暖气、手机——金额与时间都记清楚，凭证图随手留档。</p></div>';
   h+='<div class="sh"><span class="n">01</span><h2>分类汇总</h2><span class="sub">累计 ¥'+money(totAll)+'</span>'+
     '<span class="x"><button class="btn sm acc" data-act="bill-add">'+svg('i-plus',13,2)+'记一笔</button></span></div>';
-  h+='<div class="grid g4">'+
+  h+='<div class="grid g5">'+
     byType.map(function(o){
       return '<div class="kpi"><div class="k"><span class="pill" style="background:'+BILL_COLORS[o.tp]+';display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px"></span>'+BILL_TYPE[o.tp]+'</div>'+
         '<div class="v">¥'+money(o.v)+'</div><div class="d">'+DB.bills.filter(function(b){return b.type===o.tp}).length+' 笔</div></div>';
@@ -1876,7 +1889,7 @@ function vBills(){
   h+='<div class="sh" style="margin-top:14px"><span class="n">02</span><h2>缴费明细</h2><span class="sub">当前筛选 ¥'+money(totCur)+' · 共 '+all.length+' 笔</span></div>';
   h+='<div class="card" style="padding:14px 16px 16px">'+
     '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'+
-    '<div class="chips">'+[{v:'all',t:'全部'}].concat(['gas','water','electric','heating'].map(function(tp){return {v:tp,t:BILL_TYPE[tp]};})).map(function(o){
+    '<div class="chips">'+[{v:'all',t:'全部'}].concat(['gas','water','electric','heating','phone'].map(function(tp){return {v:tp,t:BILL_TYPE[tp]};})).map(function(o){
       return '<button class="chip'+(billF.type===o.v?' on':'')+'" data-act="bill-type" data-v="'+o.v+'">'+o.t+'</button>';}).join('')+'</div>'+
     mSel+'</div></div>';
   h+='<div class="card">';
@@ -1904,8 +1917,8 @@ var pendingImgs=[];
 function billDlg(id){
   var x=id?DB.bills.filter(function(a){return a.id===id})[0]:null;
   pendingImgs=Array.isArray(x&&x.imgs)?x.imgs.slice():[];
-  formDlg(x?'编辑缴费':'记一笔缴费','天然气 / 水费 / 电费 / 暖气费——金额、缴费时间、凭证图都记清楚。',[
-    {k:'type',label:'缴费类型',type:'select',opts:[{v:'gas',t:'天然气'},{v:'water',t:'水费'},{v:'electric',t:'电费'},{v:'heating',t:'暖气费'}],val:x?x.type:'gas',req:true},
+  formDlg(x?'编辑缴费':'记一笔缴费','天然气 / 水费 / 电费 / 暖气费 / 手机缴费——金额、缴费时间、凭证图都记清楚。',[
+    {k:'type',label:'缴费类型',type:'select',opts:[{v:'gas',t:'天然气'},{v:'water',t:'水费'},{v:'electric',t:'电费'},{v:'heating',t:'暖气费'},{v:'phone',t:'手机缴费'}],val:x?x.type:'gas',req:true},
     {k:'amount',label:'缴纳金额（元）',type:'number',step:'0.01',val:x?x.amount:'',req:true,ph:'0.00'},
     {k:'date',label:'缴费时间',type:'date',val:x?x.date:today(),req:true},
     {k:'note',label:'备注',type:'textarea',val:x?x.note:'',ph:'可选：缴费户号、周期、说明…'}
