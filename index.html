@@ -604,6 +604,50 @@ function migrate(o){
   return d;
 }
 
+/* ============ 习惯项规范化（2026-09-19 用户要求）============
+   ①「康马老师三元功法」+「九势」合并为一项「三元功法、九势」（打卡历史取并集，不丢记录）
+   ②补充「静坐」「站桩」两项
+   每次启动都跑（幂等）：本机旧数据、云端拉回的旧习惯、重复项都会被整理成同一口径。
+============================================================ */
+var HB_QN_NAME='三元功法、九势';
+var HB_EXTRA=[{name:'静坐',color:'#7A5470'},{name:'站桩',color:'#A98736'}];
+function habitNormalize(){
+  if(!DB||!Array.isArray(DB.habits)) return false;
+  var changed=false;
+  // ① 合并三元功法 / 九势（含各种旧叫法与重复副本）
+  var grp=DB.habits.filter(function(h){
+    var n=h.name||'';
+    return n.indexOf('三元功法')>=0||n.indexOf('九势')>=0;
+  });
+  if(!grp.length){
+    DB.habits.push({id:uid(),name:HB_QN_NAME,type:'check',target:1,unit:'',color:'#48627A',logs:{}});
+    changed=true;
+  } else {
+    var keep=grp[0], isChk=(keep.type!=='count'&&keep.type!=='value'), logs={};
+    grp.forEach(function(h){
+      if(h.type==='count'||h.type==='value') isChk=false;
+      Object.keys(h.logs||{}).forEach(function(d){
+        var v=+(h.logs[d]||0)||0, old=+(logs[d]||0)||0;
+        logs[d]=Math.max(old,v);
+      });
+    });
+    if(isChk){ Object.keys(logs).forEach(function(d){ if(+logs[d]||0) logs[d]=1; }); }
+    keep.logs=logs;
+    if(keep.name!==HB_QN_NAME){ keep.name=HB_QN_NAME; changed=true; }
+    if(keep.type!=='check'){ keep.type='check'; keep.target=1; changed=true; }
+    for(var i=grp.length-1;i>=1;i--){
+      var ix=DB.habits.indexOf(grp[i]);
+      if(ix>=0){ DB.habits.splice(ix,1); changed=true; }
+    }
+  }
+  // ② 静坐 / 站桩：已存在同名则不重复添加
+  HB_EXTRA.forEach(function(x){
+    var has=DB.habits.some(function(h){ return (h.name||'')===x.name; });
+    if(!has){ DB.habits.push({id:uid(),name:x.name,type:x.type||'check',target:1,unit:'',color:x.color,logs:{}}); changed=true; }
+  });
+  return changed;
+}
+
 var SEED={"v":1,"settings":{"budget":6000,"height":158,"gender":"f","age":52,"goalWeight":55,"activity":1.725,"weight":56.2,"bp":"","demo":false,"addCount":0,"lastBackup":"","lastHost":""},"tx":[],"habits":[],"body":[],"hr":[],"week":[],"events":[],"media":[],"record":[],"herbs":[],"bills":[]};
 /* 内嵌种子数据：本地无数据时作为初始内容（来自用户最新备份），避免空白工作台。 */
 var RECOVER={"v":1,"settings":{"budget":6000,"height":158,"gender":"f","age":52,"goalWeight":55,"activity":1.725,"weight":56.2,"bp":"","demo":false,"addCount":0,"lastBackup":"","lastHost":""},"tx":[],"habits":[],"body":[],"hr":[],"week":[],"events":[],"media":[],"record":[],"herbs":[],"bills":[]};
@@ -2693,6 +2737,10 @@ $('#filein').addEventListener('change',function(){
     if(DB) return;
     try{ DB=(typeof RECOVER!=='undefined'&&RECOVER)?migrate(RECOVER):((typeof SEED!=='undefined'&&SEED)?migrate(SEED):defaults()); }catch(e){ DB=defaults(); }
   }
+  // 载入/云端合并完成后：整理习惯项 + 去重 helpers（有改动才落盘）
+  function afterLoad(){
+    try{ if(habitNormalize()){ save(true); } }catch(e){}
+  }
   function boot(){
     if(finished) return; finished=true;
     ensureDB();
@@ -2703,9 +2751,9 @@ $('#filein').addEventListener('change',function(){
       showBanner('remind','自上次备份以来已新增 '+DB.settings.addCount+' 条记录，建议现在导出一份 JSON 备份。',[{t:'导出备份',a:'export'},{t:'稍后再说',a:'dismiss'}]);
     }
     if(DB.settings.gh&&DB.settings.gh.auto&&DB.settings.gh.token){
-      ghPull().then(function(){ setView('today'); },function(){ setView('today'); });
+      ghPull().then(function(){ afterLoad(); setView('today'); },function(){ afterLoad(); setView('today'); });
     } else {
-      setView('today');
+      afterLoad(); setView('today');
     }
   }
   // 兜底：载入过久时先把界面渲染出来，避免永久白屏。
