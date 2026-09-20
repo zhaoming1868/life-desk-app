@@ -610,7 +610,11 @@ function migrate(o){
    每次启动都跑（幂等）：本机旧数据、云端拉回的旧习惯、重复项都会被整理成同一口径。
 ============================================================ */
 var HB_QN_NAME='三元功法、九势';
-var HB_EXTRA=[{name:'静坐',color:'#7A5470'},{name:'站桩',color:'#A98736'}];
+var HB_EXTRA=[
+  {name:'静坐',color:'#7A5470',keys:['静坐']},
+  {name:'站桩',color:'#A98736',keys:['站桩']},
+  {name:'八法五步、太极剑',color:'#5D7C6B',keys:['八法五步','太极剑']}
+];
 function habitNormalize(){
   if(!DB||!Array.isArray(DB.habits)) return false;
   var changed=false;
@@ -642,7 +646,11 @@ function habitNormalize(){
   }
   // ② 静坐 / 站桩：已存在同名则不重复添加
   HB_EXTRA.forEach(function(x){
-    var has=DB.habits.some(function(h){ return (h.name||'')===x.name; });
+    var ks=(Array.isArray(x.keys)&&x.keys.length)?x.keys:[x.name];
+    var has=DB.habits.some(function(h){
+      var n=h.name||'';
+      return ks.some(function(k){ return n.indexOf(k)>=0; });
+    });
     if(!has){ DB.habits.push({id:uid(),name:x.name,type:x.type||'check',target:1,unit:'',color:x.color,logs:{}}); changed=true; }
   });
   return changed;
